@@ -17,17 +17,29 @@ st.set_page_config(
 # Initialize session state for auto-refresh
 if 'auto_refresh' not in st.session_state:
     st.session_state.auto_refresh = True
+if 'last_refresh_time' not in st.session_state:
+    st.session_state.last_refresh_time = datetime.datetime.now()
 
-# Add auto-refresh functionality with JavaScript if enabled
+# Native Streamlit auto-refresh (instead of JavaScript)
 if st.session_state.auto_refresh:
-    st.markdown("""
-    <script>
-        // Auto-refresh the page every 30 seconds to update the clock and countdown
-        setTimeout(function() {
-            window.location.reload();
-        }, 30000);
-    </script>
-    """, unsafe_allow_html=True)
+    # Calculate time since last refresh
+    now = datetime.datetime.now()
+    time_since_refresh = (now - st.session_state.last_refresh_time).total_seconds()
+    
+    # If it's been more than 30 seconds since the last refresh, rerun the app
+    if time_since_refresh >= 30:
+        st.session_state.last_refresh_time = now
+        st.experimental_rerun()
+    
+    # Show a countdown timer
+    seconds_to_refresh = max(0, 30 - int(time_since_refresh))
+    refresh_text = f"Next refresh in: {seconds_to_refresh} seconds"
+    
+    # Place the countdown in a small container at the bottom of the sidebar
+    with st.sidebar:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.session_state.auto_refresh:
+            st.markdown(f"<p style='text-align: center; color: var(--text-muted); font-size: 0.8rem;'>{refresh_text}</p>", unsafe_allow_html=True)
 
 # Custom CSS for better styling with dark mode support
 def local_css():
@@ -239,7 +251,8 @@ def fetch_prayer_times(lat, lon, method=2, tz_name='US/Eastern'):
     today_in_timezone = datetime.datetime.now(selected_tz).date()
     today_formatted = today_in_timezone.strftime("%d-%m-%Y")
     
-    url = f"http://api.aladhan.com/v1/timings/{today_formatted}?latitude={lat}&longitude={lon}&method={method}"
+    # Add timezone parameter to the API request
+    url = f"http://api.aladhan.com/v1/timings/{today_formatted}?latitude={lat}&longitude={lon}&method={method}&timezone={tz_name}"
     try:
         response = requests.get(url)
         data = response.json()
@@ -253,17 +266,25 @@ def fetch_prayer_times(lat, lon, method=2, tz_name='US/Eastern'):
 
 # Format time to 12-hour format with timezone
 def format_time(time_str, tz_name='US/Eastern'):
-    time_obj = datetime.datetime.strptime(time_str, '%H:%M')
-    # Create a datetime object for today with the prayer time
-    now = datetime.datetime.now()
-    dt = datetime.datetime.combine(now.date(), time_obj.time())
-    
-    # Convert to the selected timezone
-    selected_tz = timezone(tz_name)
-    dt_with_tz = selected_tz.localize(dt)
-    
-    # Format the time
-    return dt_with_tz.strftime('%I:%M %p')
+    try:
+        # Parse the time string
+        time_obj = datetime.datetime.strptime(time_str, '%H:%M')
+        
+        # Get current date in the selected timezone
+        selected_tz = timezone(tz_name)
+        now = datetime.datetime.now(selected_tz)
+        
+        # Create a datetime object for today with the prayer time
+        dt = datetime.datetime.combine(now.date(), time_obj.time())
+        
+        # Add timezone information
+        dt_with_tz = selected_tz.localize(dt)
+        
+        # Format the time
+        return dt_with_tz.strftime('%I:%M %p')
+    except Exception as e:
+        st.error(f"Error formatting time: {e}")
+        return time_str  # Return original if there's an error
 
 # Apply custom CSS
 local_css()
@@ -351,6 +372,29 @@ if fetch_clicked or st.session_state.timings is None:
             }
             # Then fetch prayer times with the selected timezone
             st.session_state.timings = fetch_prayer_times(lat, lon, method, st.session_state.selected_timezone)
+            
+            # Verify the API returned the correct date
+            if st.session_state.timings:
+                # Get today's date in the selected timezone
+                selected_tz = timezone(st.session_state.selected_timezone)
+                today_in_timezone = datetime.datetime.now(selected_tz).date()
+                api_date_str = st.session_state.timings['date']['gregorian']['date']
+                
+                try:
+                    # Parse the API date (format: DD-MM-YYYY)
+                    api_date_parts = api_date_str.split('-')
+                    api_date = datetime.date(
+                        int(api_date_parts[2]),  # Year
+                        int(api_date_parts[1]),  # Month
+                        int(api_date_parts[0])   # Day
+                    )
+                    
+                    # If API date doesn't match today's date in the timezone, log a warning
+                    if api_date != today_in_timezone:
+                        st.warning(f"API returned date ({api_date}) doesn't match today's date in {st.session_state.selected_timezone} ({today_in_timezone}). Prayer times may be incorrect.")
+                except Exception as e:
+                    st.error(f"Error parsing API date: {e}")
+            
             # Store last update time with timezone info
             st.session_state.last_update = datetime.datetime.now(timezone(st.session_state.selected_timezone))
         else:
@@ -373,6 +417,24 @@ with main_container:
         hijri_date = timings['date']['hijri']['date']
         hijri_month = timings['date']['hijri']['month']['en']
         hijri_year = timings['date']['hijri']['year']
+        
+        # Debug information (can be removed later)
+        with st.expander("Debug Information"):
+            st.write("**Timezone Information:**")
+            st.write(f"Selected Timezone: {st.session_state.selected_timezone}")
+            st.write(f"Current Server Time (UTC): {datetime.datetime.utcnow()}")
+            st.write(f"Current Time in Selected Timezone: {current_datetime_in_timezone}")
+            st.write(f"API Date: {timings['date']['readable']}")
+            st.write(f"Local Date: {date_readable}")
+            
+            st.write("**API Response:**")
+            st.write(f"API Timezone: {timings.get('meta', {}).get('timezone', 'Not specified')}")
+            st.write(f"API Latitude: {timings.get('meta', {}).get('latitude', 'Not specified')}")
+            st.write(f"API Longitude: {timings.get('meta', {}).get('longitude', 'Not specified')}")
+            
+            st.write("**Prayer Times (Raw):**")
+            for prayer, _, time in prayer_times:
+                st.write(f"{prayer}: {time}")
 
         # Create two columns for the header information
         col1, col2 = st.columns([1, 1])
