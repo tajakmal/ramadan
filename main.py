@@ -5,6 +5,7 @@ from datetime import timedelta
 import time
 import pytz
 from pytz import timezone
+import sys
 
 # Set page configuration with wider layout and custom theme
 st.set_page_config(
@@ -14,28 +15,49 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Initialize session state for auto-refresh
+# Initialize session state for auto-refresh and debug info
 if 'auto_refresh' not in st.session_state:
     st.session_state.auto_refresh = True
 if 'last_refresh_time' not in st.session_state:
     st.session_state.last_refresh_time = datetime.datetime.now()
+if 'debug_info' not in st.session_state:
+    st.session_state.debug_info = {}
 
 # Native Streamlit auto-refresh (instead of JavaScript)
 if st.session_state.auto_refresh:
-    # Calculate time since last refresh
-    now = datetime.datetime.now()
-    time_since_refresh = (now - st.session_state.last_refresh_time).total_seconds()
+    # Get current time in the selected timezone
+    if 'selected_timezone' in st.session_state:
+        selected_tz = timezone(st.session_state.selected_timezone)
+    else:
+        selected_tz = timezone('US/Eastern')  # Default timezone
     
-    # If it's been more than 30 seconds since the last refresh, rerun the app
-    if time_since_refresh >= 30:
-        st.session_state.last_refresh_time = now
-        st.experimental_rerun()
+    now_in_timezone = datetime.datetime.now(selected_tz)
     
-    # Show a countdown timer
-    seconds_to_refresh = max(0, 30 - int(time_since_refresh))
-    refresh_text = f"Next refresh in: {seconds_to_refresh} seconds"
+    # Check if it's midnight (or just past midnight) in the selected timezone
+    # This will refresh the app once per day at midnight in the user's timezone
+    if now_in_timezone.hour == 0 and now_in_timezone.minute < 5:
+        # Check if we've already refreshed in this midnight window
+        last_refresh_in_timezone = st.session_state.last_refresh_time.astimezone(selected_tz)
+        
+        # Only refresh if the last refresh was before today
+        if last_refresh_in_timezone.date() < now_in_timezone.date():
+            st.session_state.last_refresh_time = now_in_timezone
+            st.experimental_rerun()
     
-    # Place the countdown in a small container at the bottom of the sidebar
+    # Show next refresh time
+    next_midnight = datetime.datetime.combine(
+        now_in_timezone.date() + datetime.timedelta(days=1),
+        datetime.time(0, 0)
+    )
+    next_midnight = selected_tz.localize(next_midnight)
+    
+    time_to_refresh = next_midnight - now_in_timezone
+    hours_to_refresh = int(time_to_refresh.total_seconds() // 3600)
+    minutes_to_refresh = int((time_to_refresh.total_seconds() % 3600) // 60)
+    
+    refresh_text = f"Next auto-refresh at midnight ({hours_to_refresh}h {minutes_to_refresh}m)"
+    
+    # Place the refresh info in a small container at the bottom of the sidebar
     with st.sidebar:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.session_state.auto_refresh:
@@ -246,10 +268,26 @@ def geocode_location(location_name):
 
 # Function to fetch prayer times from AlAdhan API
 def fetch_prayer_times(lat, lon, method=2, tz_name='US/Eastern'):
-    # Get today's date in the selected timezone
-    selected_tz = timezone(tz_name)
-    today_in_timezone = datetime.datetime.now(selected_tz).date()
-    today_formatted = today_in_timezone.strftime("%d-%m-%Y")
+    # Get today's date in the selected timezone or use override date
+    if st.session_state.date_override and st.session_state.override_date:
+        # Use the override date
+        today_in_timezone = st.session_state.override_date
+        today_formatted = today_in_timezone.strftime("%d-%m-%Y")
+        date_source = "override"
+    else:
+        # Use the current date in the selected timezone
+        selected_tz = timezone(tz_name)
+        today_in_timezone = datetime.datetime.now(selected_tz).date()
+        today_formatted = today_in_timezone.strftime("%d-%m-%Y")
+        date_source = "current"
+    
+    # Log the date being used for the API request
+    st.session_state.debug_info = {
+        "api_request_date": today_formatted,
+        "timezone_used": tz_name,
+        "local_date": today_in_timezone,
+        "date_source": date_source
+    }
     
     # Add timezone parameter to the API request
     url = f"http://api.aladhan.com/v1/timings/{today_formatted}?latitude={lat}&longitude={lon}&method={method}&timezone={tz_name}"
@@ -257,11 +295,35 @@ def fetch_prayer_times(lat, lon, method=2, tz_name='US/Eastern'):
         response = requests.get(url)
         data = response.json()
         if data["code"] == 200:
+            # Force the correct date in the response
+            data["data"]["date"]["readable"] = today_in_timezone.strftime("%d %b %Y")
             return data["data"]
         else:
             return None
     except Exception as e:
         st.error(f"Error fetching data: {e}")
+        return None
+
+# Function to fetch next day's prayer times
+def fetch_next_day_prayer_times(lat, lon, method=2, tz_name='US/Eastern'):
+    # Get tomorrow's date in the selected timezone
+    selected_tz = timezone(tz_name)
+    tomorrow_in_timezone = (datetime.datetime.now(selected_tz) + datetime.timedelta(days=1)).date()
+    tomorrow_formatted = tomorrow_in_timezone.strftime("%d-%m-%Y")
+    
+    # Add timezone parameter to the API request
+    url = f"http://api.aladhan.com/v1/timings/{tomorrow_formatted}?latitude={lat}&longitude={lon}&method={method}&timezone={tz_name}"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        if data["code"] == 200:
+            # Force the correct date in the response
+            data["data"]["date"]["readable"] = tomorrow_in_timezone.strftime("%d %b %Y")
+            return data["data"]
+        else:
+            return None
+    except Exception as e:
+        st.error(f"Error fetching next day data: {e}")
         return None
 
 # Format time to 12-hour format with timezone
@@ -329,6 +391,35 @@ with st.sidebar:
         st.session_state.auto_refresh = auto_refresh
         st.experimental_rerun()
     
+    # Date override for debugging (hidden in a expander)
+    with st.expander("Advanced Settings"):
+        # Get today's date in the selected timezone
+        selected_tz = timezone(selected_timezone)
+        today_in_timezone = datetime.datetime.now(selected_tz).date()
+        
+        # Initialize session state for date override
+        if 'date_override' not in st.session_state:
+            st.session_state.date_override = False
+        if 'override_date' not in st.session_state:
+            st.session_state.override_date = today_in_timezone
+        
+        # Date override toggle and picker
+        date_override = st.checkbox("Override Date", value=st.session_state.date_override)
+        if date_override:
+            override_date = st.date_input("Select Date", value=st.session_state.override_date)
+            if override_date != st.session_state.override_date or date_override != st.session_state.date_override:
+                st.session_state.override_date = override_date
+                st.session_state.date_override = date_override
+                # Force refresh if date override changes
+                if st.session_state.timings is not None:
+                    st.session_state.timings = None
+        else:
+            if st.session_state.date_override:
+                st.session_state.date_override = False
+                # Force refresh if date override is turned off
+                if st.session_state.timings is not None:
+                    st.session_state.timings = None
+    
     fetch_clicked = st.button("Update Prayer Times")
     
     st.markdown("""
@@ -344,6 +435,8 @@ with st.sidebar:
 # Initialize session state to track if we need to fetch data
 if 'timings' not in st.session_state:
     st.session_state.timings = None
+if 'next_day_timings' not in st.session_state:
+    st.session_state.next_day_timings = None
 if 'location_details' not in st.session_state:
     st.session_state.location_details = None
 if 'last_update' not in st.session_state:
@@ -373,6 +466,9 @@ if fetch_clicked or st.session_state.timings is None:
             # Then fetch prayer times with the selected timezone
             st.session_state.timings = fetch_prayer_times(lat, lon, method, st.session_state.selected_timezone)
             
+            # Also fetch next day's prayer times
+            st.session_state.next_day_timings = fetch_next_day_prayer_times(lat, lon, method, st.session_state.selected_timezone)
+            
             # Verify the API returned the correct date
             if st.session_state.timings:
                 # Get today's date in the selected timezone
@@ -400,6 +496,7 @@ if fetch_clicked or st.session_state.timings is None:
         else:
             st.error(f"Could not find coordinates for '{location}'. Please try a different location.")
             st.session_state.timings = None
+            st.session_state.next_day_timings = None
 
 # Display prayer times if available
 with main_container:
@@ -410,8 +507,27 @@ with main_container:
         # Get the date and time in the selected timezone
         selected_tz = timezone(st.session_state.selected_timezone)
         current_datetime_in_timezone = datetime.datetime.now(selected_tz)
+        
+        # Always use the current date from the system, not from the API
         date_readable = current_datetime_in_timezone.strftime("%d %b %Y")
         current_time_readable = current_datetime_in_timezone.strftime("%I:%M:%S %p %Z")
+        
+        # Check if the API date matches the current date
+        api_date_str = timings['date']['gregorian']['date']
+        try:
+            # Parse the API date (format: DD-MM-YYYY)
+            api_date_parts = api_date_str.split('-')
+            api_date = datetime.date(
+                int(api_date_parts[2]),  # Year
+                int(api_date_parts[1]),  # Month
+                int(api_date_parts[0])   # Day
+            )
+            
+            # If API date doesn't match today's date in the timezone, show a warning
+            if api_date != current_datetime_in_timezone.date():
+                st.warning(f"⚠️ Note: The prayer times shown are for {api_date.strftime('%d %b %Y')} according to the API, but we're displaying them for today ({date_readable}). Times may be slightly off.")
+        except Exception as e:
+            st.error(f"Error parsing API date: {e}")
         
         # Use the Hijri date from the API
         hijri_date = timings['date']['hijri']['date']
@@ -434,8 +550,20 @@ with main_container:
             st.write(f"Selected Timezone: {st.session_state.selected_timezone}")
             st.write(f"Current Server Time (UTC): {datetime.datetime.utcnow()}")
             st.write(f"Current Time in Selected Timezone: {current_datetime_in_timezone}")
-            st.write(f"API Date: {timings['date']['readable']}")
-            st.write(f"Local Date: {date_readable}")
+            
+            st.write("**Date Information:**")
+            st.write(f"Date Override Enabled: {st.session_state.date_override}")
+            if st.session_state.date_override:
+                st.write(f"Override Date: {st.session_state.override_date}")
+            st.write(f"API Date from Response: {timings['date']['readable']}")
+            st.write(f"Local Date (Displayed): {date_readable}")
+            
+            if 'debug_info' in st.session_state and st.session_state.debug_info:
+                st.write("**API Request Details:**")
+                st.write(f"Date Used in API Request: {st.session_state.debug_info.get('api_request_date', 'Not available')}")
+                st.write(f"Date Source: {st.session_state.debug_info.get('date_source', 'Not available')}")
+                st.write(f"Timezone Used in API Request: {st.session_state.debug_info.get('timezone_used', 'Not available')}")
+                st.write(f"Local Date When Request Was Made: {st.session_state.debug_info.get('local_date', 'Not available')}")
             
             st.write("**API Response:**")
             st.write(f"API Timezone: {timings.get('meta', {}).get('timezone', 'Not specified')}")
@@ -445,6 +573,23 @@ with main_container:
             st.write("**Prayer Times (Raw):**")
             for prayer, _, time in prayer_times:
                 st.write(f"{prayer}: {time}")
+            
+            if st.session_state.next_day_timings:
+                st.write("**Next Day's Prayer Times (Raw):**")
+                next_day_timings = st.session_state.next_day_timings
+                for prayer in ['Fajr', 'Sunrise', 'Dhuhr', 'Asr', 'Maghrib', 'Isha']:
+                    st.write(f"Tomorrow's {prayer}: {next_day_timings['timings'][prayer]}")
+            
+            st.write("**Environment Information:**")
+            st.write(f"Python Version: {sys.version}")
+            st.write(f"Streamlit Version: {st.__version__}")
+            st.write(f"Pytz Version: {pytz.__version__}")
+            
+            # Add a button to force refresh data
+            if st.button("Force Refresh Data"):
+                st.session_state.timings = None
+                st.session_state.next_day_timings = None
+                st.experimental_rerun()
 
         # Create two columns for the header information
         col1, col2 = st.columns([1, 1])
@@ -470,6 +615,21 @@ with main_container:
         # Highlight Suhoor (Fajr) and Iftar (Maghrib) in a special section
         st.markdown("<h2 style='text-align: center; margin-top: 2rem;'>🌅 Suhoor & Iftar Times</h2>", unsafe_allow_html=True)
         
+        # Get tomorrow's data if available
+        tomorrow_fajr = None
+        tomorrow_maghrib = None
+        tomorrow_date = None
+        
+        if st.session_state.next_day_timings:
+            next_day_timings = st.session_state.next_day_timings
+            tomorrow_fajr = format_time(next_day_timings['timings']['Fajr'], st.session_state.selected_timezone)
+            tomorrow_maghrib = format_time(next_day_timings['timings']['Maghrib'], st.session_state.selected_timezone)
+            
+            # Get tomorrow's date in the selected timezone
+            selected_tz = timezone(st.session_state.selected_timezone)
+            tomorrow_in_timezone = (datetime.datetime.now(selected_tz) + datetime.timedelta(days=1)).date()
+            tomorrow_date = tomorrow_in_timezone.strftime("%d %b")
+        
         col1, col2 = st.columns([1, 1])
         
         with col1:
@@ -478,6 +638,7 @@ with main_container:
                 <h3 style='margin-bottom: 0.5rem;'>Suhoor Ends</h3>
                 <p style='font-size: 1.5rem; font-weight: 700; color: var(--text-primary);'>{format_time(timings['timings']['Fajr'], st.session_state.selected_timezone)}</p>
                 <p style='color: var(--text-muted); font-size: 0.9rem;'>Stop eating before Fajr prayer</p>
+                {f"<div style='margin-top: 0.8rem; padding-top: 0.8rem; border-top: 1px dashed var(--suhoor-border);'><p style='font-size: 0.85rem; color: var(--text-muted);'>Tomorrow ({tomorrow_date}): <span style='font-weight: 600;'>{tomorrow_fajr}</span></p></div>" if tomorrow_fajr else ""}
             </div>
             """, unsafe_allow_html=True)
             
@@ -487,6 +648,7 @@ with main_container:
                 <h3 style='margin-bottom: 0.5rem;'>Iftar Time</h3>
                 <p style='font-size: 1.5rem; font-weight: 700; color: var(--text-primary);'>{format_time(timings['timings']['Maghrib'], st.session_state.selected_timezone)}</p>
                 <p style='color: var(--text-muted); font-size: 0.9rem;'>Break your fast at Maghrib prayer</p>
+                {f"<div style='margin-top: 0.8rem; padding-top: 0.8rem; border-top: 1px dashed var(--iftar-border);'><p style='font-size: 0.85rem; color: var(--text-muted);'>Tomorrow ({tomorrow_date}): <span style='font-weight: 600;'>{tomorrow_maghrib}</span></p></div>" if tomorrow_maghrib else ""}
             </div>
             """, unsafe_allow_html=True)
 
