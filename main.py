@@ -3,6 +3,8 @@ import requests
 import datetime
 from datetime import timedelta
 import time
+import pytz
+from pytz import timezone
 
 # Set page configuration with wider layout and custom theme
 st.set_page_config(
@@ -230,10 +232,19 @@ def fetch_prayer_times(lat, lon, method=2):
         st.error(f"Error fetching data: {e}")
         return None
 
-# Format time to 12-hour format
-def format_time(time_str):
+# Format time to 12-hour format with timezone
+def format_time(time_str, tz_name='US/Eastern'):
     time_obj = datetime.datetime.strptime(time_str, '%H:%M')
-    return time_obj.strftime('%I:%M %p')
+    # Create a datetime object for today with the prayer time
+    now = datetime.datetime.now()
+    dt = datetime.datetime.combine(now.date(), time_obj.time())
+    
+    # Convert to the selected timezone
+    selected_tz = timezone(tz_name)
+    dt_with_tz = selected_tz.localize(dt)
+    
+    # Format the time
+    return dt_with_tz.strftime('%I:%M %p')
 
 # Apply custom CSS
 local_css()
@@ -251,6 +262,19 @@ with st.sidebar:
     location = st.text_input("Enter City, State/Country", "Douglasville, GA")
     
     st.markdown("<h3 style='text-align: center; color: var(--text-primary);'>⚙️ Settings</h3>", unsafe_allow_html=True)
+    
+    # Timezone selector
+    timezone_options = [
+        'US/Eastern', 'US/Central', 'US/Mountain', 'US/Pacific',
+        'US/Alaska', 'US/Hawaii', 'Europe/London', 'Europe/Paris',
+        'Asia/Dubai', 'Asia/Karachi', 'Asia/Kolkata', 'Asia/Singapore',
+        'Australia/Sydney'
+    ]
+    selected_timezone = st.selectbox(
+        "Timezone",
+        options=timezone_options,
+        index=0  # Default to US/Eastern
+    )
     
     method = st.selectbox("Calculation Method", options=[
         (2, "Islamic Society of North America"),
@@ -278,6 +302,15 @@ if 'location_details' not in st.session_state:
     st.session_state.location_details = None
 if 'last_update' not in st.session_state:
     st.session_state.last_update = None
+if 'selected_timezone' not in st.session_state:
+    st.session_state.selected_timezone = 'US/Eastern'
+
+# Update timezone in session state if changed
+if st.session_state.selected_timezone != selected_timezone:
+    st.session_state.selected_timezone = selected_timezone
+    # Force refresh if timezone changes
+    if st.session_state.timings is not None:
+        st.experimental_rerun()
 
 # Auto-fetch on load or when button is clicked
 if fetch_clicked or st.session_state.timings is None:
@@ -293,7 +326,8 @@ if fetch_clicked or st.session_state.timings is None:
             }
             # Then fetch prayer times
             st.session_state.timings = fetch_prayer_times(lat, lon, method)
-            st.session_state.last_update = datetime.datetime.now()
+            # Store last update time with timezone info
+            st.session_state.last_update = datetime.datetime.now(timezone(st.session_state.selected_timezone))
         else:
             st.error(f"Could not find coordinates for '{location}'. Please try a different location.")
             st.session_state.timings = None
@@ -325,6 +359,7 @@ with main_container:
             <div style='background-color: var(--bg-secondary); padding: 1rem; border-radius: 10px; text-align: center;'>
                 <h3 style='margin-bottom: 0.5rem;'>📍 Location</h3>
                 <p style='color: var(--text-muted);'>{location_details['display_name']}</p>
+                <p style='color: var(--text-muted); font-size: 0.9rem;'>Timezone: {st.session_state.selected_timezone}</p>
             </div>
             """, unsafe_allow_html=True)
         
@@ -337,7 +372,7 @@ with main_container:
             st.markdown(f"""
             <div class='prayer-card suhoor-card' style='text-align: center;'>
                 <h3 style='margin-bottom: 0.5rem;'>Suhoor Ends</h3>
-                <p style='font-size: 1.5rem; font-weight: 700; color: var(--text-primary);'>{format_time(timings['timings']['Fajr'])}</p>
+                <p style='font-size: 1.5rem; font-weight: 700; color: var(--text-primary);'>{format_time(timings['timings']['Fajr'], st.session_state.selected_timezone)}</p>
                 <p style='color: var(--text-muted); font-size: 0.9rem;'>Stop eating before Fajr prayer</p>
             </div>
             """, unsafe_allow_html=True)
@@ -346,7 +381,7 @@ with main_container:
             st.markdown(f"""
             <div class='prayer-card iftar-card' style='text-align: center;'>
                 <h3 style='margin-bottom: 0.5rem;'>Iftar Time</h3>
-                <p style='font-size: 1.5rem; font-weight: 700; color: var(--text-primary);'>{format_time(timings['timings']['Maghrib'])}</p>
+                <p style='font-size: 1.5rem; font-weight: 700; color: var(--text-primary);'>{format_time(timings['timings']['Maghrib'], st.session_state.selected_timezone)}</p>
                 <p style='color: var(--text-muted); font-size: 0.9rem;'>Break your fast at Maghrib prayer</p>
             </div>
             """, unsafe_allow_html=True)
@@ -374,17 +409,24 @@ with main_container:
                 st.markdown(f"""
                 <div class='prayer-card' style='text-align: center;'>
                     <h3 style='margin-bottom: 0.5rem;'>{icon} {prayer}</h3>
-                    <p style='font-size: 1.2rem; font-weight: 600; color: var(--text-primary);'>{format_time(time)}</p>
+                    <p style='font-size: 1.2rem; font-weight: 600; color: var(--text-primary);'>{format_time(time, st.session_state.selected_timezone)}</p>
                 </div>
                 """, unsafe_allow_html=True)
 
         # Countdown to next prayer
-        current_time = datetime.datetime.now()
+        current_time = datetime.datetime.now(timezone(st.session_state.selected_timezone))
         next_prayer, next_prayer_time, next_prayer_icon = None, None, None
         
         for prayer, icon, time in prayer_times:
             prayer_time_today = datetime.datetime.strptime(time, '%H:%M')
-            prayer_datetime = current_time.replace(hour=prayer_time_today.hour, minute=prayer_time_today.minute, second=0, microsecond=0)
+            # Create a datetime object for today with the prayer time in the selected timezone
+            prayer_datetime = datetime.datetime.combine(
+                current_time.date(),
+                prayer_time_today.time()
+            )
+            # Add timezone information
+            prayer_datetime = timezone(st.session_state.selected_timezone).localize(prayer_datetime)
+            
             if prayer_datetime > current_time:
                 next_prayer = prayer
                 next_prayer_time = prayer_datetime
@@ -412,9 +454,10 @@ with main_container:
             
         # Last updated info
         if st.session_state.last_update:
+            last_update_time = st.session_state.last_update.astimezone(timezone(st.session_state.selected_timezone))
             st.markdown(f"""
             <p style='text-align: center; color: var(--text-muted); font-size: 0.8rem;'>
-                Last updated: {st.session_state.last_update.strftime('%I:%M %p')}
+                Last updated: {last_update_time.strftime('%I:%M %p %Z')}
             </p>
             """, unsafe_allow_html=True)
 
