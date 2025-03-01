@@ -418,6 +418,16 @@ with main_container:
         hijri_month = timings['date']['hijri']['month']['en']
         hijri_year = timings['date']['hijri']['year']
         
+        # Define all prayer times with icons
+        prayer_times = [
+            ('Fajr', '🌅', timings['timings']['Fajr']),
+            ('Sunrise', '☀️', timings['timings']['Sunrise']),
+            ('Dhuhr', '🌞', timings['timings']['Dhuhr']),
+            ('Asr', '🌇', timings['timings']['Asr']),
+            ('Maghrib', '🌆', timings['timings']['Maghrib']),
+            ('Isha', '🌃', timings['timings']['Isha']),
+        ]
+        
         # Debug information (can be removed later)
         with st.expander("Debug Information"):
             st.write("**Timezone Information:**")
@@ -485,16 +495,6 @@ with main_container:
         
         # Create a 3-column layout for prayer times
         cols = st.columns(3)
-        
-        # Define all prayer times with icons
-        prayer_times = [
-            ('Fajr', '🌅', timings['timings']['Fajr']),
-            ('Sunrise', '☀️', timings['timings']['Sunrise']),
-            ('Dhuhr', '🌞', timings['timings']['Dhuhr']),
-            ('Asr', '🌇', timings['timings']['Asr']),
-            ('Maghrib', '🌆', timings['timings']['Maghrib']),
-            ('Isha', '🌃', timings['timings']['Isha']),
-        ]
         
         # Display prayer times in columns
         for i, (prayer, icon, time) in enumerate(prayer_times):
