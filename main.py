@@ -14,6 +14,21 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Initialize session state for auto-refresh
+if 'auto_refresh' not in st.session_state:
+    st.session_state.auto_refresh = True
+
+# Add auto-refresh functionality with JavaScript if enabled
+if st.session_state.auto_refresh:
+    st.markdown("""
+    <script>
+        // Auto-refresh the page every 30 seconds to update the clock and countdown
+        setTimeout(function() {
+            window.location.reload();
+        }, 30000);
+    </script>
+    """, unsafe_allow_html=True)
+
 # Custom CSS for better styling with dark mode support
 def local_css():
     st.markdown("""
@@ -218,9 +233,13 @@ def geocode_location(location_name):
         return None, None, None
 
 # Function to fetch prayer times from AlAdhan API
-def fetch_prayer_times(lat, lon, method=2):
-    today = datetime.date.today().strftime("%d-%m-%Y")
-    url = f"http://api.aladhan.com/v1/timings/{today}?latitude={lat}&longitude={lon}&method={method}"
+def fetch_prayer_times(lat, lon, method=2, tz_name='US/Eastern'):
+    # Get today's date in the selected timezone
+    selected_tz = timezone(tz_name)
+    today_in_timezone = datetime.datetime.now(selected_tz).date()
+    today_formatted = today_in_timezone.strftime("%d-%m-%Y")
+    
+    url = f"http://api.aladhan.com/v1/timings/{today_formatted}?latitude={lat}&longitude={lon}&method={method}"
     try:
         response = requests.get(url)
         data = response.json()
@@ -283,6 +302,12 @@ with st.sidebar:
         (4, "Umm Al-Qura University, Makkah")
     ], format_func=lambda x: x[1])[0]
     
+    # Auto-refresh toggle
+    auto_refresh = st.checkbox("Auto-refresh (30s)", value=st.session_state.auto_refresh)
+    if auto_refresh != st.session_state.auto_refresh:
+        st.session_state.auto_refresh = auto_refresh
+        st.experimental_rerun()
+    
     fetch_clicked = st.button("Update Prayer Times")
     
     st.markdown("""
@@ -324,8 +349,8 @@ if fetch_clicked or st.session_state.timings is None:
                 "longitude": lon,
                 "display_name": display_name
             }
-            # Then fetch prayer times
-            st.session_state.timings = fetch_prayer_times(lat, lon, method)
+            # Then fetch prayer times with the selected timezone
+            st.session_state.timings = fetch_prayer_times(lat, lon, method, st.session_state.selected_timezone)
             # Store last update time with timezone info
             st.session_state.last_update = datetime.datetime.now(timezone(st.session_state.selected_timezone))
         else:
@@ -338,7 +363,13 @@ with main_container:
         timings = st.session_state.timings
         location_details = st.session_state.location_details
         
-        date_readable = timings['date']['readable']
+        # Get the date and time in the selected timezone
+        selected_tz = timezone(st.session_state.selected_timezone)
+        current_datetime_in_timezone = datetime.datetime.now(selected_tz)
+        date_readable = current_datetime_in_timezone.strftime("%d %b %Y")
+        current_time_readable = current_datetime_in_timezone.strftime("%I:%M:%S %p %Z")
+        
+        # Use the Hijri date from the API
         hijri_date = timings['date']['hijri']['date']
         hijri_month = timings['date']['hijri']['month']['en']
         hijri_year = timings['date']['hijri']['year']
@@ -351,6 +382,7 @@ with main_container:
             <div style='background-color: var(--bg-secondary); padding: 1rem; border-radius: 10px; text-align: center;'>
                 <h3 style='margin-bottom: 0.5rem;'>🗓️ {date_readable}</h3>
                 <p style='color: var(--text-muted);'>{hijri_date} | {hijri_month} {hijri_year} Hijri</p>
+                <p style='color: var(--text-primary); font-weight: 600; margin-top: 0.5rem;'>⏰ {current_time_readable}</p>
             </div>
             """, unsafe_allow_html=True)
             
